@@ -3,7 +3,7 @@
  * Plugin Name: WebPix Optimizer
  * Plugin URI: https://webpix.io/integrations/wordpress
  * Description: Routes WordPress images, SVG, CSS, JavaScript and font loading through WebPix CDN optimization controls.
- * Version: 1.0.7
+ * Version: 1.0.15
  * Author: WebPix
  * Author URI: https://webpix.io
  * License: Proprietary
@@ -490,9 +490,9 @@ final class Webpix_Optimizer_Plugin
         );
 
         $safeHtml = (string)preg_replace_callback(
-            '/url\([\'"]?([^\'")]+)[\'"]?\)/i',
+            '/url\(\s*([\'"]?)([^\'")\s]+)(?:\1\s*\))?/i',
             function (array $matches): string {
-                $originalUrl = trim($matches[1]);
+                $originalUrl = trim($matches[2]);
                 if (!$this->isSupportedImageUrl($originalUrl)) {
                     return $matches[0];
                 }
