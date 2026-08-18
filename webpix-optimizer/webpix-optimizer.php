@@ -3,7 +3,7 @@
  * Plugin Name: WebPix Optimizer
  * Plugin URI: https://webpix.io/integrations/wordpress
  * Description: Routes WordPress images, SVG, CSS, JavaScript and font loading through WebPix CDN optimization controls.
- * Version: 1.0.6
+ * Version: 1.0.7
  * Author: WebPix
  * Author URI: https://webpix.io
  * License: Proprietary
@@ -25,6 +25,8 @@ final class Webpix_Optimizer_Plugin
     private const SUPPORTED_RESIZE_MODES = ['default', 'auto', 'fit', 'fill'];
     private const MIN_RESPONSIVE_WIDTH = 500;
     private const MIN_RESPONSIVE_HEIGHT = 300;
+    private const IMAGE_URL_ATTRIBUTES = ['src', 'data-src', 'data-lazy-src', 'data-original'];
+    private const IMAGE_SRCSET_ATTRIBUTES = ['srcset', 'data-srcset', 'data-lazy-srcset'];
 
     private array $options = [];
     private array $rewriteCache = [];
@@ -269,17 +271,11 @@ final class Webpix_Optimizer_Plugin
             '/<img\b[^>]*>/i',
             function (array $matches): string {
                 $tag = $matches[0];
-                $originalSrc = $this->extractAttribute($tag, 'src');
+                $originalSrc = $this->extractImageSource($tag);
                 $dimensions = $this->extractDimensions($tag, $originalSrc);
 
-                $tag = (string)preg_replace_callback(
-                    '/(\s+src=["\'])([^"\']+)(["\'])/i',
-                    function (array $srcMatches) use ($dimensions): string {
-                        return $srcMatches[1] . $this->buildImageUrl($srcMatches[2], $dimensions['width'], $dimensions['height']) . $srcMatches[3];
-                    },
-                    $tag,
-                    1
-                );
+                $tag = $this->rewriteImageUrlAttributes($tag, $dimensions);
+                $tag = $this->rewriteImageSrcsetAttributes($tag);
 
                 if (!empty($this->options['auto_dimensions'])) {
                     $tag = $this->addMissingImageDimensions($tag, $dimensions);
@@ -301,33 +297,56 @@ final class Webpix_Optimizer_Plugin
     private function rewriteSrcsets(string $html): string
     {
         return (string)preg_replace_callback(
-            '/\s(srcset)=["\']([^"\']+)["\']/i',
-            function (array $matches): string {
-                $parts = explode(',', $matches[2]);
-                $rewritten = [];
-
-                foreach ($parts as $part) {
-                    $part = trim($part);
-                    if ($part === '') {
-                        continue;
-                    }
-
-                    $subParts = preg_split('/\s+/', $part, 2);
-                    $url = $subParts[0] ?? '';
-                    $descriptor = trim($subParts[1] ?? '');
-                    $width = 0;
-
-                    if ($descriptor !== '' && preg_match('/^([0-9]+)w$/i', $descriptor, $widthMatch)) {
-                        $width = (int)$widthMatch[1];
-                    }
-
-                    $rewritten[] = trim(str_replace(',', '%2C', $this->buildImageUrl($url, $width, 0)) . ' ' . $descriptor);
-                }
-
-                return ' srcset="' . esc_attr(implode(', ', $rewritten)) . '"';
-            },
+            $this->attributePattern(self::IMAGE_SRCSET_ATTRIBUTES),
+            fn(array $matches): string => $matches[1] . $this->rewriteSrcsetValue($matches[2]) . $matches[3],
             $html
         );
+    }
+
+    private function rewriteImageUrlAttributes(string $tag, array $dimensions): string
+    {
+        return (string)preg_replace_callback(
+            $this->attributePattern(self::IMAGE_URL_ATTRIBUTES),
+            function (array $matches) use ($dimensions): string {
+                return $matches[1] . $this->buildImageUrl($matches[2], $dimensions['width'], $dimensions['height']) . $matches[3];
+            },
+            $tag
+        );
+    }
+
+    private function rewriteImageSrcsetAttributes(string $tag): string
+    {
+        return (string)preg_replace_callback(
+            $this->attributePattern(self::IMAGE_SRCSET_ATTRIBUTES),
+            fn(array $matches): string => $matches[1] . $this->rewriteSrcsetValue($matches[2]) . $matches[3],
+            $tag
+        );
+    }
+
+    private function rewriteSrcsetValue(string $srcset): string
+    {
+        $parts = explode(',', $srcset);
+        $rewritten = [];
+
+        foreach ($parts as $part) {
+            $part = trim($part);
+            if ($part === '') {
+                continue;
+            }
+
+            $subParts = preg_split('/\s+/', $part, 2);
+            $url = $subParts[0] ?? '';
+            $descriptor = trim($subParts[1] ?? '');
+            $width = 0;
+
+            if ($descriptor !== '' && preg_match('/^([0-9]+)w$/i', $descriptor, $widthMatch)) {
+                $width = (int)$widthMatch[1];
+            }
+
+            $rewritten[] = trim(str_replace(',', '%2C', $this->buildImageUrl($url, $width, 0)) . ' ' . $descriptor);
+        }
+
+        return esc_attr(implode(', ', $rewritten));
     }
 
     private function addResponsiveSrcset(string $tag, array $dimensions, string $src): string
@@ -358,7 +377,8 @@ final class Webpix_Optimizer_Plugin
             $srcset[] = str_replace(',', '%2C', $this->buildImageUrl($src, $width, $height)) . ' ' . $width . 'w';
         }
 
-        $attributes = ' srcset="' . esc_attr(implode(', ', $srcset)) . '"';
+        $srcsetAttribute = $this->hasLazyImageSource($tag) ? 'data-srcset' : 'srcset';
+        $attributes = ' ' . $srcsetAttribute . '="' . esc_attr(implode(', ', $srcset)) . '"';
         if (stripos($tag, ' sizes=') === false) {
             $sizes = $originalWidth > 0 ? '(max-width: ' . $originalWidth . 'px) 100vw, ' . $originalWidth . 'px' : '100vw';
             $attributes .= ' sizes="' . esc_attr($sizes) . '"';
@@ -434,7 +454,7 @@ final class Webpix_Optimizer_Plugin
                 }
 
                 $tag = $matches[0];
-                $src = $this->extractAttribute($tag, 'src');
+                $src = $this->extractImageSource($tag);
                 $origin = $this->extractOrigin($src);
                 if ($origin === null || $origin['extension'] === 'svg') {
                     return $tag;
@@ -874,6 +894,44 @@ final class Webpix_Optimizer_Plugin
         }
 
         return trim((string)$match[1]);
+    }
+
+    private function extractImageSource(string $tag): string
+    {
+        $fallback = '';
+
+        foreach (self::IMAGE_URL_ATTRIBUTES as $attribute) {
+            $value = $this->extractAttribute($tag, $attribute);
+            if ($value === '') {
+                continue;
+            }
+
+            if ($fallback === '') {
+                $fallback = $value;
+            }
+
+            if (stripos($value, 'data:') !== 0 && $this->extractOrigin($value) !== null) {
+                return $value;
+            }
+        }
+
+        return $fallback;
+    }
+
+    private function hasLazyImageSource(string $tag): bool
+    {
+        return $this->extractAttribute($tag, 'data-src') !== ''
+            || $this->extractAttribute($tag, 'data-lazy-src') !== '';
+    }
+
+    private function attributePattern(array $attributes): string
+    {
+        $alternatives = array_map(
+            static fn(string $attribute): string => preg_quote($attribute, '/'),
+            $attributes
+        );
+
+        return '/(\s+(?:' . implode('|', $alternatives) . ')=["\'])([^"\']+)(["\'])/i';
     }
 
     private function extractPositiveIntAttribute(string $tag, string $attribute): int
