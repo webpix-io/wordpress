@@ -3,7 +3,7 @@
  * Plugin Name: WebPix Optimizer
  * Plugin URI: https://webpix.io/integrations/wordpress
  * Description: Routes WordPress images, SVG, CSS, JavaScript and font loading through WebPix CDN optimization controls.
- * Version: 1.0.15
+ * Version: 1.0.17
  * Author: WebPix
  * Author URI: https://webpix.io
  * License: Proprietary
@@ -444,15 +444,9 @@ final class Webpix_Optimizer_Plugin
 
     private function optimizeListingLcpImage(string $html): string
     {
-        $optimized = false;
-
         return (string)preg_replace_callback(
-            '/<img\b[^>]*>/i',
-            function (array $matches) use (&$optimized): string {
-                if ($optimized) {
-                    return $matches[0];
-                }
-
+            '/<img\b(?=[^>]*\bclass=["\'][^"\']*\bhero__slider-img\b[^"\']*["\'])[^>]*>/i',
+            function (array $matches): string {
                 $tag = $matches[0];
                 $src = $this->extractImageSource($tag);
                 $origin = $this->extractOrigin($src);
@@ -460,7 +454,6 @@ final class Webpix_Optimizer_Plugin
                     return $tag;
                 }
 
-                $tag = preg_replace('/\sloading=["\']lazy["\']/i', '', $tag) ?: $tag;
                 if (stripos($tag, 'fetchpriority=') === false) {
                     $tag = preg_replace('/<img\b/i', '<img fetchpriority="high"', $tag, 1) ?: $tag;
                 }
@@ -468,7 +461,6 @@ final class Webpix_Optimizer_Plugin
                     $tag = preg_replace('/<img\b/i', '<img decoding="sync"', $tag, 1) ?: $tag;
                 }
 
-                $optimized = true;
                 return $tag;
             },
             $html,
